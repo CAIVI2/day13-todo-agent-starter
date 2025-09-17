@@ -227,7 +227,7 @@ public class PlannerService {
      * Parse AI response
      * <p>
      * AI may return plans in multiple formats:
-     * 1. Pure JSON format
+     * 1. Pure JSON format (single object or array)
      * 2. JSON in Markdown code blocks
      * <p>
      * This method is responsible for parsing these formats and extracting structured execution plans
@@ -235,9 +235,10 @@ public class PlannerService {
     private PlanTaskResult parseAIResponse(String response) {
         logger.info("Parsing AI response to extract execution plan");
 
-        // Try to parse as direct JSON
-        if (response.trim().startsWith("{")) {
-            return parseAsDirectJson(response);
+        String trimmedResponse = response.trim();
+
+        if (trimmedResponse.startsWith("{") || trimmedResponse.startsWith("[")) {
+            return parseAsDirectJson(trimmedResponse);
         }
 
         // Try to extract JSON from Markdown code blocks
@@ -245,14 +246,25 @@ public class PlannerService {
     }
 
     /**
-     * Parse direct JSON response
+     * Parse direct JSON response - now supports both single object and array formats
      */
     private PlanTaskResult parseAsDirectJson(String response) {
         try {
             JsonNode jsonNode = objectMapper.readTree(response);
-            PlanInfo planInfo = objectMapper.treeToValue(jsonNode, PlanInfo.class);
-            logger.info("Successfully parsed JSON format execution plan");
-            return new PlanTaskResult(Collections.singletonList(planInfo));
+
+            if (jsonNode.isArray()) {
+                List<PlanInfo> planInfos = new ArrayList<>();
+                for (JsonNode planNode : jsonNode) {
+                    PlanInfo planInfo = objectMapper.treeToValue(planNode, PlanInfo.class);
+                    planInfos.add(planInfo);
+                }
+                logger.info("Successfully parsed JSON array format execution plan with {} tasks", planInfos.size());
+                return new PlanTaskResult(planInfos);
+            } else {
+                PlanInfo planInfo = objectMapper.treeToValue(jsonNode, PlanInfo.class);
+                logger.info("Successfully parsed single JSON format execution plan");
+                return new PlanTaskResult(Collections.singletonList(planInfo));
+            }
         } catch (JsonProcessingException e) {
             logger.error("JSON parsing failed: {}", response, e);
             throw new RuntimeException("Unable to parse AI's JSON response", e);
@@ -295,7 +307,7 @@ public class PlannerService {
     }
 
     /**
-     * Parse code blocks to execution plans
+     * Parse code blocks to execution plans - enhanced to handle both single array and multiple objects
      */
     private List<PlanInfo> parseCodeBlocksToPlans(List<FencedCodeBlock> codeBlocks) {
         List<PlanInfo> planInfos = new ArrayList<>();
@@ -303,9 +315,20 @@ public class PlannerService {
         for (FencedCodeBlock codeBlock : codeBlocks) {
             String code = codeBlock.getLiteral();
             try {
-                PlanInfo planInfo = objectMapper.readValue(code, PlanInfo.class);
-                planInfos.add(planInfo);
-                logger.debug("Successfully parsed code block: {}", planInfo.getFunctionName());
+                if (code.trim().startsWith("[")) {
+                    JsonNode jsonNode = objectMapper.readTree(code);
+                    if (jsonNode.isArray()) {
+                        for (JsonNode planNode : jsonNode) {
+                            PlanInfo planInfo = objectMapper.treeToValue(planNode, PlanInfo.class);
+                            planInfos.add(planInfo);
+                        }
+                        logger.debug("Successfully parsed code block array with {} plans", jsonNode.size());
+                    }
+                } else {
+                    PlanInfo planInfo = objectMapper.readValue(code, PlanInfo.class);
+                    planInfos.add(planInfo);
+                    logger.debug("Successfully parsed single code block: {}", planInfo.getFunctionName());
+                }
             } catch (Exception e) {
                 logger.warn("Failed to parse code block, skipping: {}", code, e);
             }
